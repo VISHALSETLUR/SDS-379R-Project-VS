@@ -1,0 +1,569 @@
+---
+title: "SDS 379R Project Test"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(error = TRUE)
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE,  
+                      warning = FALSE, message = FALSE, 
+                      fig.align = "center",
+                      R.options = list(max.print=100))
+
+# Edit the file starting below
+```
+
+```{r include=FALSE}
+# load packages and save datasets within R Markdown document, view each dataset
+library(tidyverse)
+library(readr)
+library(factoextra)
+library(cluster)
+library(plotROC)
+library(corrplot)
+library(caret)
+library(glmnet)
+library(car)
+library(cowplot)
+
+# read datasets into environment
+
+Receiving_Stats <- read_csv("Receiving_Stats.csv")
+Passing_Stats <- read_csv("Passing_Stats.csv")
+Rushing_Stats <- read_csv("Rushing_Stats.csv")
+Defensive_Stats <- read_csv("Defensive_Stats.csv")
+Kicking_Stats <- read_csv("Kicking_Stats.csv")
+Punting_Stats <- read_csv("Punting_Stats.csv")
+Returning_Stats <- read_csv("Returning_Stats.csv")
+All_Pro <- read_csv("All_Pro.csv")
+Pro_Bowl <- read_csv("Pro_Bowl.csv")
+
+Receiving_Stats
+All_Pro
+Defensive_Stats
+Kicking_Stats
+Passing_Stats
+Pro_Bowl
+Punting_Stats
+Returning_Stats
+Rushing_Stats
+```
+
+
+```{r include=FALSE}
+
+datasets <- list(Receiving_Stats,Passing_Stats,Rushing_Stats,Defensive_Stats,Kicking_Stats,Punting_Stats,Returning_Stats) # make a list of datasets
+
+datasets <- lapply(datasets, function(x) {
+                    x = x %>% mutate(Player=str_remove_all(Player,"[^a-zA-Z0-9 \\-\\.]"))
+                    return(x)} ) # remove all special characters from Player variable
+
+All_Pro <- All_Pro %>%
+  mutate(All_Pro_Status = 1) %>% # create All Pro Status variable
+  select(Player,All_Pro_Status) 
+
+All_Pro
+
+Pro_Bowl <- Pro_Bowl %>%
+  mutate(Pro_Bowl_Status = 1) %>% # create Pro Bowl Status variable
+  select(Player,Pro_Bowl_Status)
+
+Pro_Bowl
+
+datasets <- lapply(datasets, function(x) {
+                    x = x %>% left_join(All_Pro, by = "Player") %>% left_join(Pro_Bowl, by = "Player")
+                    return(x)} ) # left join All_Pro_Status and Pro_Bowl_Status
+
+
+datasets <- lapply(datasets, function(x) {
+                    x = x %>% mutate(Pro_Bowl_Status = ifelse(is.na(Pro_Bowl_Status),0,1),
+                                     All_Pro_Status = ifelse(is.na(All_Pro_Status),0,1))
+                    return(x)} ) # change NA values in All_Pro_Status and Pro_Bowl_Status to 0's
+
+datasets[1] <- lapply(datasets[1], function(x) {
+                    x = x %>% select(-Rk, -`Player-additional`)
+                    return(x)} ) # remove undesired variables
+
+datasets[2] <- lapply(datasets[2], function(x) {
+                    x = x %>% select(-Rk, -`Player-additional`,-QBrec)
+                    return(x)} ) # remove undesired variables
+
+datasets[3:7] <- lapply(datasets[3:7], function(x) {
+                    x = x %>% select(-Rk,-`-9999`)
+                    return(x)} ) # remove undesired variables
+
+datasets <- lapply(datasets, function(x) {
+                    x = x %>% arrange(Player)
+                    return(x)} ) # alphabetize
+
+datasets <- lapply(datasets, function(x) {
+                    x = x %>% mutate_at(vars(contains("%")),~gsub("\\%","",.)) %>%  mutate_at(vars(contains("%")),as.numeric)
+                    return(x)} ) # remove % and make variables numeric
+
+NA_vars <- lapply(datasets, function(x) {
+                    x = names(which(colSums(is.na(x %>% select(is.numeric,-All_Pro_Status,-Pro_Bowl_Status)))>0))
+                    return(x)} ) # find variables in each dataset that are missing some values
+
+NA_vars
+
+not_NA_vars <- lapply(datasets, function(x) {
+                    x = names(which(colSums(is.na(x %>% select(is.numeric,-All_Pro_Status,-Pro_Bowl_Status)))==0))
+                    return(x)} ) # find variables in each dataset that are not missing any values
+
+not_NA_vars
+
+datasets[c(1,3:7)] <- lapply(datasets[c(1,3:7)], function(x) {
+                    x = x %>% mutate_if(is.numeric,~replace_na(.,0))
+                    return(x)} ) # replace missing values for all datasets except Passing_Stats (all missing values are actually zeros in these datasets)
+
+datasets[2] <- lapply(datasets[2], function(x) {
+                    x = x %>% mutate_at(unlist(NA_vars[2])[c(1,3,4)],~replace_na(.,0))
+                    return(x)} ) # replace missing values for all Passing_Stats variables containing NA except QBR (QBR missing values are actually missing)
+
+datasets
+
+Final_Datasets <- lapply(datasets, function(x) {
+                    x = x %>% select(-Tm, -GS) %>% na.omit
+                    return(x)} ) # deselect undesired variables and remove observations with NA values
+Final_Datasets
+
+names(Final_Datasets) <- c("Receiving_Stats_Revised","Passing_Stats_Revised","Rushing_Stats_Revised","Defensive_Stats_Revised","Kicking_Stats_Revised","Punting_Stats_Revised","Returning_Stats_Revised") # name datasets within list of datasets
+
+Final_Datasets$Receiving_Stats_Revised <- Final_Datasets$Receiving_Stats_Revised %>%
+  filter(Pos %in% c('WR','TE')) # filter desired positions
+
+Final_Datasets$Passing_Stats_Revised <- Final_Datasets$Passing_Stats_Revised %>%
+  filter(Pos %in% c('QB')) # filter desired positions
+
+Final_Datasets$Rushing_Stats_Revised <- Final_Datasets$Rushing_Stats_Revised %>%
+  filter(Pos %in% c('RB')) # filter desired positions
+
+Final_Datasets$Defensive_Stats_Revised <- Final_Datasets$Defensive_Stats_Revised %>%
+  filter(Pos %in% c("DE","CB","DB","DT","OLB","DL","S","LB","FS","MLB","NT","DE/OLB","SS","LB/OLB","CB/DB","DE/DL","DB/S")) # filter desired positions
+
+Final_Datasets$Kicking_Stats_Revised <- Final_Datasets$Kicking_Stats_Revised %>%
+  filter(Pos %in% c('K')) # filter desired positions
+
+Final_Datasets$Punting_Stats_Revised <- Final_Datasets$Punting_Stats_Revised %>%
+  filter(Pos %in% c('P')) # filter desired positions
+
+Final_Datasets
+
+list2env(Final_Datasets,.GlobalEnv) # bring datasets from list of datasets to environment
+
+```
+
+``` {r include = FALSE}
+
+# Exploratory Analysis
+
+# Summary Statistics
+
+Summary_Statistics <- lapply(Final_Datasets, function(x) {
+                    x = x %>% summary(na.rm=T) %>% as.data.frame %>%
+                      separate(Freq, into = c('Summary_Statistic', 'Value'),sep = ":") %>%
+                      mutate(Value=as.numeric(Value)) %>%
+                      select(-Var1) %>%
+                      mutate(Var2=as.character(Var2)) %>%
+                      rename(Variable=Var2) %>%
+                      mutate_at(2,~gsub(" ","",.)) %>%
+                      filter(Summary_Statistic %in% c("Min.", "1stQu.", "Median", "Mean", "3rdQu.", "Max.")) %>%
+                      pivot_wider(names_from = Summary_Statistic, values_from = Value)
+                    return(x)} ) # find summary statistics
+
+SD_Data <- lapply(Final_Datasets, function(x) {
+                    x = x %>% select(is.numeric) %>%
+                      summarize_all(sd,na.rm=T) %>%
+                      pivot_longer(cols = everything(), names_to = "Variable",values_to = "SD") %>%
+                      select(SD)
+                    return(x)} ) # find standard deviations
+
+Summary_Statistics <- mapply(cbind,Summary_Statistics,SD_Data, SIMPLIFY = FALSE) # combine summary statistics and standard deviations
+
+Summary_Statistics
+
+# Correlation Matrices
+
+Correlation_Matrices <- lapply(Final_Datasets, function(x) {
+                    x = cor(x %>% select(1:50 & is.numeric),use = "pairwise.complete.obs") %>%
+                      # Save as a data frame
+                      as.data.frame %>%
+                      # Convert row names to an explicit variable
+                      rownames_to_column %>%
+                      # Pivot so that all correlations appear in the same column
+                      pivot_longer(-1, 
+                                   names_to = "other_var", 
+                                   values_to = "correlation") %>%
+                      # Define ggplot (reorder values on y-axis)
+                      ggplot(aes(x = rowname, 
+                                 y = ordered(other_var, levels = rev(sort(unique(other_var)))),
+                                 fill = correlation)) +
+                      # Heat map with geom_tile
+                      geom_tile() +
+                      # Change the scale to make the middle appear neutral
+                      scale_fill_gradient2(low = "red", mid = "white", high = "blue") +
+                      # Overlay values
+                      # Angle the x-axis label to 45 degrees
+                      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+                      # Give title and labels
+                      labs(title = "Correlation Matrix for NFL Statistics", 
+                           x = "Variable 1", y = "Variable 2")
+                    return(x)} )
+Correlation_Matrices
+
+# Boxplots
+
+Sk_Box_Plot <- Final_Datasets$Defensive_Stats_Revised %>% ggplot(aes(y=Sk)) +
+  geom_boxplot() # Sacks
+
+PD_Box_Plot <- Final_Datasets$Defensive_Stats_Revised %>% ggplot(aes(y=D_Int_PD)) +
+  geom_boxplot() # Pass Deflections
+
+plot_grid(Sk_Box_Plot,PD_Box_Plot, labels = "AUTO") # combine graphs
+
+# Pro Bowl and All Pro Status vs. Sacks and PD
+
+Sk_Plot_Pro_Bowl <- Final_Datasets$Defensive_Stats_Revised %>% ggplot(aes(x=Sk,y=Pro_Bowl_Status)) +
+  geom_point() # Pro Bowl Status vs. Sacks
+
+PD_Plot_Pro_Bowl <- Final_Datasets$Defensive_Stats_Revised %>% ggplot(aes(x=D_Int_PD,y=Pro_Bowl_Status)) +
+  geom_point() # Pro Bowl Status vs. Pass Deflections
+
+Sk_Plot_All_Pro <- Final_Datasets$Defensive_Stats_Revised %>% ggplot(aes(x=Sk,y=All_Pro_Status)) +
+  geom_point() # All Pro Status vs. Sacks
+
+PD_Plot_All_Pro <- Final_Datasets$Defensive_Stats_Revised %>% ggplot(aes(x=D_Int_PD,y=All_Pro_Status)) +
+  geom_point() # All Pro Status vs. Pass Deflections
+
+
+plot_grid(Sk_Plot_Pro_Bowl,Sk_Plot_All_Pro, labels = "AUTO") # combine graphs
+plot_grid(PD_Plot_Pro_Bowl,PD_Plot_All_Pro, labels = "AUTO") # combine graphs
+
+
+
+```
+``` {r include=FALSE}
+
+# Dimensionality Reduction
+
+Dimensionality_Reduction_Datasets <- lapply(Final_Datasets, function(x) {
+                    x = x %>% select(-All_Pro_Status,-Pro_Bowl_Status,-Player,-Pos) %>% na.omit  # deselect undesired variables 
+                    return(x)} )
+Dimensionality_Reduction_Datasets
+
+Scaled_Datasets <- lapply(Dimensionality_Reduction_Datasets, function(x) {
+                    x = x %>% scale %>% as.data.frame 
+                    return(x)} ) # scale datasets
+Scaled_Datasets
+
+pca <- lapply(Scaled_Datasets, function(x) {
+                    x = x %>% prcomp
+                    return(x)} ) # PCA
+
+pca
+
+Scree_Plots <- lapply(pca, function(x) {
+                    x = fviz_eig(x, addlabels = TRUE) # scree plot
+                    return(x)} )
+
+Scree_Plots
+
+Scatter_Plots <- lapply(pca, function(x) {
+                    x = fviz_pca_ind(x, repel = TRUE) # scatter plot
+                    return(x)} )
+
+Scatter_Plots
+
+lapply(pca, function(x) {
+                    x = get_pca_var(x)$coord %>% as.data.frame
+                    return(x)} ) # PCs in dataframe
+
+Correlation_Circles <- lapply(pca, function(x) {
+                    x = fviz_pca_var(x, col.var = "black", repel = TRUE) # correlation circle
+                    return(x)} )
+
+Correlation_Circles
+
+```
+
+
+
+``` {r include=FALSE}
+
+# Clustering
+
+Clustering_Datasets <- lapply(Final_Datasets, function(x) {
+                    x = x %>% select(-All_Pro_Status,-Pro_Bowl_Status,-Player,-Pos) %>% na.omit  # deselect undesired variables
+                    return(x)} )
+Clustering_Datasets
+
+Scaled_Datasets <- lapply(Clustering_Datasets, function(x) {
+                    x = x %>% scale %>% as.data.frame 
+                    return(x)} ) # scale datasets
+Scaled_Datasets
+
+Cluster_Plots <- lapply(Scaled_Datasets, function(x) {
+                    x = fviz_nbclust(x, pam, method = "silhouette") # determine number of clusters
+                    return(x)} )
+Cluster_Plots
+
+PAM_Results <- lapply(Scaled_Datasets, function(x) {
+                    x = x %>% pam(k=2)
+                    return(x)} ) # 2 clusters
+
+PAM_Results
+
+Clusters <- lapply(PAM_Results, function(x) {
+                    x = x$clustering %>% as.data.frame
+                    return(x)} ) # select cluster data
+
+Clusters <- lapply(Clusters, function(x) {
+                    x = rename(x, Cluster = .)
+                    return(x)} ) # rename variable name
+
+Clusters
+
+NFL_PAM <- mapply(cbind,Final_Datasets,Clusters, SIMPLIFY = FALSE) # combine cluster data with original data
+
+NFL_PAM
+
+Fviz_clusters <- mapply(fviz_cluster,PAM_Results, Scaled_Datasets, SIMPLIFY = FALSE) # visualize clusters
+
+Fviz_clusters
+
+NFL_PAM_GROUP <- lapply(NFL_PAM, function(x) {
+                    x = x %>% select(is.numeric) %>% group_by(Cluster) %>% summarize_all(mean, na.rm=T)
+                    return(x)} ) # find mean values of each variable for each cluster
+
+NFL_PAM_GROUP
+
+
+```
+
+``` {r include=FALSE}
+
+# Pro Bowl Classification
+
+Pro_Bowl_Classification_Data <- lapply(Final_Datasets, function(x) {
+                    x = x %>% select(-All_Pro_Status)
+                    return(x)} ) # deselect All Pro Status for Pro Bowl classification
+Pro_Bowl_Classification_Data
+
+Pro_Bowl_Classification_Data$Receiving_Stats_Revised <- Pro_Bowl_Classification_Data$Receiving_Stats_Revised %>%
+  select(-`Ctch%`,-`Y/Tgt`,-`Rec_Y/G`,-`R/G`,-Tgt,-`Y/R`,-Rec_1D,-Rec_Lng,-GP,-Age,-Pos,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+Pro_Bowl_Classification_Data$Passing_Stats_Revised <- Pro_Bowl_Classification_Data$Passing_Stats_Revised %>%
+  select(-`Pass_TD%`,-`O_Int%`,-Cmp,-`Sk%`,-Sk_Yds,-Pass_Att,-`AY/A`,-`Y/C`,-Rate,-GWD,-`NY/A`,-`ANY/A`,-GP,-`1D`,-Cmp_Lng,-`Y/A`,-`Pass_Y/G`,-Age,-Pos,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+Pro_Bowl_Classification_Data$Rushing_Stats_Revised <- Pro_Bowl_Classification_Data$Rushing_Stats_Revised %>%
+  select(-R_Att,-`R_Y/G`,-R_Lng,-GP,-R_1D,-Age,-Pos,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+Pro_Bowl_Classification_Data$Defensive_Stats_Revised <- Pro_Bowl_Classification_Data$Defensive_Stats_Revised %>%
+  select(-D_Int_Yds,-D_Int_Lng,-F_Yds,-Tackles_Solo,-Tackles_Ast,-QBHits,-GP,-Age,-D_Int_TD,-FR,-Fmb,-F_TD,-Pos,-TFL,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+Pro_Bowl_Classification_Data$Kicking_Stats_Revised <- Pro_Bowl_Classification_Data$Kicking_Stats_Revised %>%
+  select(-`FGA_0-19`,-`FGA_20-29`,-`FGA_30-39`,-`FGA_40-49`,-`FGA_50+`,-FGA,-XPA,-XPM,-KO,-K_TB,-KOYds,-`FGM_0-19`,-`FGM_20-29`,-`FGM_30-39`,-`FGM_40-49`,-`FGM_50+`,-FGM,-Age,-GP,-Pos,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+Pro_Bowl_Classification_Data$Punting_Stats_Revised <- Pro_Bowl_Classification_Data$Punting_Stats_Revised %>%
+  select(-Pnt,-Pnt_Yds,-Pnt_RetYds,-Net,-Pnt_TB,-In20,-Age,-GP,-`Y/P`,-Pnt_Lng,-`In20%`,-Pos,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+Pro_Bowl_Classification_Data$Returning_Stats_Revised <- Pro_Bowl_Classification_Data$Returning_Stats_Revised %>%
+  select(-Pnt_Ret,-K_Ret,-K_Ret_Yds,-Pnt_Ret_Yds,-APYd,-Age,-GP,-Pnt_Ret_Lng,-K_Ret_Lng,-Pos,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+Pro_Bowl_Classification_Data
+
+
+
+Pro_Bowl_Log <- lapply(Pro_Bowl_Classification_Data, function(x) {
+                    x = glm(Pro_Bowl_Status ~ ., data = x, family = "binomial")
+                    return(x)} ) # logistic regression model
+Pro_Bowl_Log
+
+
+VIF_Pro_Bowl <- lapply(Pro_Bowl_Log, function(x) {
+                    x = vif(x)
+                    return(x)} ) # VIF analysis
+VIF_Pro_Bowl
+
+Summary_Pro_Bowl_Log <- lapply(Pro_Bowl_Log, function(x) {
+                    x = x %>% summary
+                    return(x)} ) # summary of logistic regression model
+Summary_Pro_Bowl_Log
+
+Pro_Bowl_Pred <- lapply(Pro_Bowl_Log, function(x) {
+                    x = x %>% predict(type = "response") %>% as.data.frame
+                    return(x)} ) # find predictions based on logistic regression model
+
+Pro_Bowl_Pred <- lapply(Pro_Bowl_Pred, function(x) {
+                    x = x %>% rename(x, Pro_Bowl_Predictions = .) %>% mutate(Pro_Bowl_Predicted = ifelse(Pro_Bowl_Predictions>0.5,1,0))
+                    return(x)} ) # find predicted Pro Bowl status from predictions
+
+Pro_Bowl_Pred
+
+Pro_Bowl_Pred_Datasets <- mapply(cbind, Pro_Bowl_Classification_Data, Pro_Bowl_Pred, SIMPLIFY = FALSE) # combine predictions and predicted values with original data
+
+Pro_Bowl_Pred_Datasets
+
+Pro_Bowl_Table <- lapply(Pro_Bowl_Pred_Datasets, function(x) {
+                    x = table(x$Pro_Bowl_Status,x$Pro_Bowl_Predicted) %>% addmargins
+                    return(x)} ) # make confusion matrix
+
+Pro_Bowl_Table
+
+Pro_Bowl_ROC <- lapply(Pro_Bowl_Pred_Datasets, function(x) {
+                    x = ggplot(x) + 
+  geom_roc(aes(d = Pro_Bowl_Status, m = Pro_Bowl_Predictions), n.cuts = 10)
+                    return(x)} ) # make ROC curve
+
+Pro_Bowl_ROC
+
+Pro_Bowl_AUC <- mapply(calc_auc,Pro_Bowl_ROC,SIMPLIFY = FALSE) # find AUC
+
+Pro_Bowl_AUC
+
+
+
+# Pro Bowl Cross Validation
+
+Pro_Bowl_Cross_Validation <- lapply(Pro_Bowl_Classification_Data, function(x) {
+                    x = train(as.factor(Pro_Bowl_Status) ~ .,
+                              data = x,
+                              method = "glm",
+                              trControl = trainControl(method = "cv", number = 10),
+                              family = "binomial")
+                    return(x)} ) # cross validation
+Pro_Bowl_Cross_Validation
+
+Pro_Bowl_CV_Results <- lapply(Pro_Bowl_Cross_Validation, function(x) {
+                    x = x$results %>% select(Accuracy, Kappa)
+                    return(x)} ) # select accuracy and kappa values
+Pro_Bowl_CV_Results
+
+```
+
+
+
+
+``` {r include=FALSE}
+
+# All Pro Classification
+
+All_Pro_Classification_Data <- lapply(Final_Datasets, function(x) {
+                    x = x %>% select(-Pro_Bowl_Status)
+                    return(x)} ) # deselect Pro Bowl Status for All Pro classification
+All_Pro_Classification_Data
+
+All_Pro_Classification_Data$Receiving_Stats_Revised <- All_Pro_Classification_Data$Receiving_Stats_Revised %>%
+  select(-`Ctch%`,-`Y/Tgt`,-`Rec_Y/G`,-`R/G`,-Tgt,-`Y/R`,-Rec_1D,-Rec_Lng,-GP,-Age,-Pos,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+All_Pro_Classification_Data$Passing_Stats_Revised <- All_Pro_Classification_Data$Passing_Stats_Revised %>%
+  select(-`Pass_TD%`,-`O_Int%`,-Cmp,-`Sk%`,-Sk_Yds,-Pass_Att,-`AY/A`,-`Y/C`,-Rate,-GWD,-`NY/A`,-`ANY/A`,-GP,-`1D`,-Cmp_Lng,-`Y/A`,-`Pass_Y/G`,-Age,-Pos,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+All_Pro_Classification_Data$Rushing_Stats_Revised <- All_Pro_Classification_Data$Rushing_Stats_Revised %>%
+  select(-R_Att,-`R_Y/G`,-R_Lng,-GP,-R_1D,-Age,-Pos,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+All_Pro_Classification_Data$Defensive_Stats_Revised <- All_Pro_Classification_Data$Defensive_Stats_Revised %>%
+  select(-D_Int_Yds,-D_Int_Lng,-F_Yds,-Tackles_Solo,-Tackles_Ast,-QBHits,-GP,-Age,-D_Int_TD,-FR,-Fmb,-F_TD,-Pos,-TFL,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+All_Pro_Classification_Data$Kicking_Stats_Revised <- All_Pro_Classification_Data$Kicking_Stats_Revised %>%
+  select(-`FGA_0-19`,-`FGA_20-29`,-`FGA_30-39`,-`FGA_40-49`,-`FGA_50+`,-FGA,-XPA,-XPM,-KO,-K_TB,-KOYds,-`FGM_0-19`,-`FGM_20-29`,-`FGM_30-39`,-`FGM_40-49`,-`FGM_50+`,-FGM,-Age,-GP,-Pos,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+All_Pro_Classification_Data$Punting_Stats_Revised <- All_Pro_Classification_Data$Punting_Stats_Revised %>%
+  select(-Pnt,-Pnt_Yds,-Pnt_RetYds,-Net,-Pnt_TB,-In20,-Age,-GP,-`Y/P`,-Pnt_Lng,-`In20%`,-Pos,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+All_Pro_Classification_Data$Returning_Stats_Revised <- All_Pro_Classification_Data$Returning_Stats_Revised %>%
+  select(-Pnt_Ret,-K_Ret,-K_Ret_Yds,-Pnt_Ret_Yds,-APYd,-Age,-GP,-Pnt_Ret_Lng,-K_Ret_Lng,-Pos,-Player) 
+  # deselect undesired, multicollinear, and related variables
+
+All_Pro_Classification_Data
+
+
+
+All_Pro_Log <- lapply(All_Pro_Classification_Data, function(x) {
+                    x = glm(All_Pro_Status ~ ., data = x, family = "binomial")
+                    return(x)} ) # logistic regression model
+All_Pro_Log
+
+
+VIF_All_Pro <- lapply(All_Pro_Log, function(x) {
+                    x = vif(x)
+                    return(x)} ) # VIF analysis
+VIF_All_Pro
+
+Summary_All_Pro_Log <- lapply(All_Pro_Log, function(x) {
+                    x = x %>% summary
+                    return(x)} ) # summary of logistic regression model
+Summary_All_Pro_Log
+
+All_Pro_Pred <- lapply(All_Pro_Log, function(x) {
+                    x = x %>% predict(type = "response") %>% as.data.frame
+                    return(x)} ) # find predictions based on logistic regression model
+
+All_Pro_Pred <- lapply(All_Pro_Pred, function(x) {
+                    x = x %>% rename(x, All_Pro_Predictions = .) %>% mutate(All_Pro_Predicted = ifelse(All_Pro_Predictions>0.5,1,0))
+                    return(x)} ) # find predicted All Pro status from predictions
+
+All_Pro_Pred
+
+All_Pro_Pred_Datasets <- mapply(cbind, All_Pro_Classification_Data, All_Pro_Pred, SIMPLIFY = FALSE) # combine predictions and predicted values with original data
+
+All_Pro_Pred_Datasets
+
+All_Pro_Table <- lapply(All_Pro_Pred_Datasets, function(x) {
+                    x = table(x$All_Pro_Status,x$All_Pro_Predicted) %>% addmargins
+                    return(x)} ) # make confusion matrix
+
+All_Pro_Table
+
+All_Pro_ROC <- lapply(All_Pro_Pred_Datasets, function(x) {
+                    x = ggplot(x) + 
+  geom_roc(aes(d = All_Pro_Status, m = All_Pro_Predictions), n.cuts = 10)
+                    return(x)} ) # make ROC curve
+
+All_Pro_ROC
+
+All_Pro_AUC <- mapply(calc_auc,All_Pro_ROC,SIMPLIFY = FALSE) # find AUC
+
+All_Pro_AUC
+
+plot_grid(Pro_Bowl_ROC$Defensive_Stats_Revised,All_Pro_ROC$Defensive_Stats_Revised,labels = "AUTO") # combine Pro Bowl and All Pro ROC curves
+
+
+
+# All Pro Cross Validation
+
+All_Pro_Cross_Validation <- lapply(All_Pro_Classification_Data, function(x) {
+                    x = train(as.factor(All_Pro_Status) ~ .,
+                              data = x,
+                              method = "glm",
+                              trControl = trainControl(method = "cv", number = 10),
+                              family = "binomial")
+                    return(x)} ) # cross validation
+All_Pro_Cross_Validation
+
+All_Pro_CV_Results <- lapply(All_Pro_Cross_Validation, function(x) {
+                    x = x$results %>% select(Accuracy, Kappa)
+                    return(x)} ) # select accuracy and kappa values
+All_Pro_CV_Results
+
+
+
+```
